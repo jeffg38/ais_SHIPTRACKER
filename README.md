@@ -1,43 +1,117 @@
-# AIS Ship Tracker
+# AIS Ship Tracker + LED Matrix Display
 
-A real-time maritime vessel tracker for the terminal, built in Python using the [AISStream](https://aisstream.io) WebSocket API. Displays a live color-coded table of ships including vessel type, flag, destination, speed, heading, and navigational status — with automatic reconnection and persistent session support via tmux.
+A real-time maritime vessel tracking system built on a Raspberry Pi 5, displaying live ship traffic in the English Channel on a 64×64 RGB LED matrix panel. Vessels are color-coded by type, positioned on a geographic map with coastline reference, and identified by a scrolling ticker with type codes, destination, speed, heading, and nav status.
 
-Built and tested on a Raspberry Pi 5 running Debian/Raspberry Pi OS.
-
-![Python](https://img.shields.io/badge/python-3.13-blue) ![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%205-red) ![License](https://img.shields.io/badge/license-MIT-green)
+![Python](https://img.shields.io/badge/python-3.13-blue) ![CircuitPython](https://img.shields.io/badge/circuitpython-9.x-green) ![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%205-red) ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 ---
 
-## Features
+## System Overview
 
-- Live WebSocket feed from AISStream with automatic reconnection
-- Color-coded vessel rows by type (tanker, cargo, passenger, tug, SAR, fishing, sailing, etc.)
-- Per-vessel cache merging position reports and static data (name, type, destination, dimensions, draught, ETA, callsign, IMO)
-- MMSI decoding → country/flag of registration using full ITU Maritime Identification Digits table
-- Navigational status decoding (underway, moored, at anchor, restricted manoeuvrability, etc.)
-- Stale vessel dimming (rows fade after 60 seconds without an update)
-- Live-redrawing terminal table with fixed header — no scrolling noise
-- Predefined regions switchable via `--region` command-line flag
-- Custom bounding box support via `--bbox`
-- Adjustable table size via `--table`
-
----
-
-## Requirements
-
-- Python 3.10+
-- A free API key from [aisstream.io](https://aisstream.io)
-- A terminal supporting ANSI 256 colors (xterm-256color recommended)
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
+```
+AISStream WebSocket API
+        │
+        ▼
+Raspberry Pi 5 (Skadi)
+  ├── ais_SHIPTRACKER.py   — live AIS data, vessel cache, vessels.json writer
+  └── ais_server.py        — Flask HTTP server serving vessels.json on port 5000
+        │
+        │  WiFi / HTTP (local network)
+        ▼
+Adafruit Matrix Portal S3
+  └── code.py              — CircuitPython display driver
+        │
+        ▼
+64×64 RGB LED Matrix Panel (Adafruit #5362, 2mm pitch)
 ```
 
 ---
 
-## Setup
+## Hardware
+
+| Component | Part | Notes |
+|---|---|---|
+| Single-board computer | Raspberry Pi 5 | Any Pi 4/5 works |
+| Matrix controller | Adafruit Matrix Portal S3 | Built-in WiFi, ESP32-S3 |
+| LED panel | Adafruit #5362 — 64×64 RGB, 2mm pitch | HUB75 interface |
+| Power supply | 5V 3A USB-C | Sufficient for this low pixel-fill display |
+
+**Important hardware note:** The Matrix Portal S3 Address E jumper must be bridged to pin 8 for 64-row panels. On most boards this is already done at the factory — check the two pads labeled `8` and `16` on the back of the board. The middle pad should be connected to `8`.
+
+---
+
+## Display Layout
+
+```
+┌──────────────────────────────────────┐  row 0
+│  UK / Kent coastline (dark green)    │
+│                                      │
+│  M A P   A R E A   (rows 0–54)       │
+│                                      │
+│  Colored dots = vessels              │
+│  City markers = warm white +         │
+│    Folkestone · Dover · Ramsgate     │
+│    Boulogne · Calais · Dunkirk       │
+│                                      │
+│  French/Belgian coastline            │
+├──────────────────────────────────────┤  row 55
+│  ── divider ─────────────────────── │
+├──────────────────────────────────────┤  row 56
+│  Scrolling ticker (rows 56–63)       │
+│  TK BIRTHE ESSBERGER>BEANR 9.4kn 58 │
+└──────────────────────────────────────┘  row 63
+```
+
+---
+
+## Vessel Color Key
+
+| Color | Type |
+|---|---|
+| Yellow | Tanker |
+| Orange | Cargo |
+| Cyan | Passenger / High-speed craft |
+| Amber | Tug / Towing |
+| Green | Fishing |
+| Magenta | Sailing / Pleasure |
+| Red | SAR / Military |
+| Blue | Pilot vessel |
+| Grey | Unknown type |
+| Dim | Stale — no update in >5 minutes |
+
+---
+
+## Ticker Format
+
+Each vessel entry in the scrolling ticker shows:
+
+```
+TK BIRTHE ESSBERGER>BEANR 9.4kn 58   CG DOVER SEAWAYS>DUNKER 16.4kn 79 MOOR
+```
+
+| Field | Example | Meaning |
+|---|---|---|
+| Type code | `TK` | Vessel type (TK=Tanker, CG=Cargo, PS=Passenger, TG=Tug, FV=Fishing, SV=Sailing, SR=SAR, PV=Pilot, HS=High-speed) |
+| Name | `BIRTHE ESSBERGER` | Vessel name |
+| Destination | `>BEANR` | UN/LOCODE or free-text destination |
+| SOG | `9.4kn` | Speed over ground in knots |
+| HDG | `58` | Heading in degrees |
+| Nav status | `MOOR` | Only shown when notable (ANCH, MOOR, RESTR, DRGHT, AGRND, FISH, EMRG) |
+
+---
+
+## Button Functions (Matrix Portal S3)
+
+| Button | Action |
+|---|---|
+| UP | Show color key overlay (6 seconds) |
+| DOWN | Show stats screen — vessel count, message count, uptime, errors, server IP |
+
+---
+
+## Software Setup
+
+### Raspberry Pi
 
 **1. Clone the repo:**
 ```bash
@@ -45,165 +119,109 @@ git clone https://github.com/jeffg38/ais_SHIPTRACKER.git
 cd ais_SHIPTRACKER
 ```
 
-**2. Create a virtual environment:**
+**2. Create virtual environment and install dependencies:**
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-```
-
-**3. Install dependencies:**
-```bash
 pip install -r requirements.txt
 ```
 
-**4. Create your `.env` file with your AISStream API key:**
+**3. Create `.env` file with your AISStream API key:**
 ```bash
 nano .env
 ```
-Add this line:
 ```
 AISSTREAM_API_KEY=your_api_key_here
 ```
-Get a free API key at [aisstream.io](https://aisstream.io). The `.env` file is listed in `.gitignore` and will never be committed to the repo.
+Get a free API key at [aisstream.io](https://aisstream.io).
+
+**4. Run the tracker and server in separate tmux sessions:**
+```bash
+# Session 1 — AIS tracker
+tmux new -s ais
+source venv/bin/activate
+python ais_SHIPTRACKER.py --region channel
+
+# Session 2 — Flask server
+tmux new -s server
+source venv/bin/activate
+python ais_server.py
+```
+
+**5. Verify the server is running:**
+
+Open `http://[PI-IP]:5000/status` in a browser. You should see a live vessel table auto-refreshing every 10 seconds.
+
+**Detach from tmux** with `Ctrl+B, D`. Sessions persist after SSH disconnect.
+**Reattach** with `tmux attach -t ais` or `tmux attach -t server`.
 
 ---
 
-## Usage
+### Matrix Portal S3
 
-**Basic — English Channel (default):**
-```bash
-python ais_SHIPTRACKER.py
+**1. Install CircuitPython** on the Matrix Portal S3:
+- Double-click the reset button until the NeoPixel turns green
+- Download the latest CircuitPython UF2 from [circuitpython.org](https://circuitpython.org/board/adafruit_matrixportal_s3/)
+- Drag the UF2 onto the MATRIXPORTAL drive
+
+**2. Install required libraries** into `/lib` on CIRCUITPY:
+
+From the [Adafruit CircuitPython Bundle](https://circuitpython.org/libraries):
+- `adafruit_display_text/` (folder)
+- `adafruit_requests.mpy`
+- `adafruit_connection_manager.mpy`
+
+**3. Configure WiFi and server settings:**
+
+Copy `settings.toml.example` to `settings.toml` on CIRCUITPY and fill in your details:
+```toml
+CIRCUITPY_WIFI_SSID = "your_wifi_network"
+CIRCUITPY_WIFI_PASSWORD = "your_wifi_password"
+AIS_SERVER_IP = "192.168.0.51"
+AIS_SERVER_PORT = "5000"
 ```
 
-**Select a predefined region:**
+**4. Copy `code.py`** to the root of CIRCUITPY:
 ```bash
-python ais_SHIPTRACKER.py --region channel      # English Channel / Dover Strait
+cp code.py /Volumes/CIRCUITPY/code.py
+```
+
+The Matrix Portal S3 will restart automatically and connect to the Pi server.
+
+---
+
+## Regions
+
+The tracker supports multiple predefined regions via the `--region` flag:
+
+```bash
+python ais_SHIPTRACKER.py --region channel      # English Channel (default)
 python ais_SHIPTRACKER.py --region gulf         # Persian Gulf / Strait of Hormuz
 python ais_SHIPTRACKER.py --region northsea     # North Sea
 python ais_SHIPTRACKER.py --region med          # Mediterranean Sea
 python ais_SHIPTRACKER.py --region singapore    # Singapore Strait
+python ais_SHIPTRACKER.py --region custom --bbox "50.5 51.5 1.0 2.5"
 ```
 
-**Custom bounding box:**
-```bash
-python ais_SHIPTRACKER.py --region custom --bbox "48.0 52.0 -5.0 2.0"
-# Format: "LAT_MIN LAT_MAX LON_MIN LON_MAX"
-```
-
-**Change table size:**
-```bash
-python ais_SHIPTRACKER.py --region channel --table 30
-```
-
-**Show help:**
-```bash
-python ais_SHIPTRACKER.py --help
-```
+**Note:** The `code.py` bounding box constants (`LAT_MIN`, `LAT_MAX`, `LON_MIN`, `LON_MAX`) and coastline bitmap must be updated manually to match the chosen region. The English Channel configuration is the default.
 
 ---
 
-## Running Long-Term on a Raspberry Pi
+## SSH Keepalive (recommended)
 
-For persistent 24/7 operation use `tmux` so the script keeps running even if your SSH session drops:
-
-**Install tmux (first time only):**
-```bash
-sudo apt install tmux
-```
-
-**Start a named session and run the tracker:**
-```bash
-tmux new -s ais
-cd ais_SHIPTRACKER
-source venv/bin/activate
-python ais_SHIPTRACKER.py
-```
-
-**Detach and leave it running** (script continues in background):
-```
-Ctrl+B, then D
-```
-
-**Reattach later to check on it:**
-```bash
-tmux attach -t ais
-```
-
-**List all running tmux sessions:**
-```bash
-tmux ls
-```
-
----
-
-## SSH Keepalive (Mac/Linux)
-
-If you're connecting to your Pi over SSH and your connection drops when idle, add this to `~/.ssh/config` on your local machine:
+Add to `~/.ssh/config` on your local machine to prevent idle SSH disconnections:
 
 ```
-Host 192.168.0.xx          # replace with your Pi's IP
+Host [PI-IP]
     ServerAliveInterval 60
     ServerAliveCountMax 10
 ```
 
 ---
 
-## Color Key
-
-| Color | Vessel Type |
-|---|---|
-| 🟡 Yellow | Tanker |
-| ⚪ White | Cargo |
-| 🔵 Cyan | Passenger / High-speed craft |
-| 🟠 Orange | Tug / Towing |
-| 🟢 Green | Fishing |
-| 🟣 Magenta | Sailing / Pleasure craft |
-| 🔴 Red | SAR / Military / Law enforcement |
-| 💙 Blue | Pilot vessel |
-| ⬜ Grey | Unknown type |
-| Dim | Stale — no update in >60 seconds |
-
----
-
-## Table Columns
-
-| Column | Description |
-|---|---|
-| Name | Vessel name from AIS |
-| Flag | Country of registration decoded from MMSI |
-| Type | Vessel type from ShipStaticData |
-| Destination | Destination port (UN/LOCODE or free text) |
-| Lat / Lon | Current position in decimal degrees |
-| SOG | Speed Over Ground in knots |
-| HDG | True heading in degrees (C = Course Over Ground fallback) |
-| Nav Status | AIS navigational status |
-| Age | Seconds since last message received |
-| # | Total messages received from this vessel this session |
-
----
-
-## Data Notes
-
-- **Vessel type** comes from `ShipStaticData` messages which are broadcast every few minutes. Type colors will fill in within 2–3 minutes of startup.
-- **Destinations** use [UN/LOCODE](https://unece.org/trade/uncefact/unlocode) format (e.g. `NLRTM` = Rotterdam, `BEANR` = Antwerp, `FRDKK` = Dunkirk) or free text entered by the crew.
-- **511 heading** means "not available" per the AIS spec — the script falls back to Course Over Ground (shown with a `C` suffix) automatically.
-- **AIS coverage** varies by region. The English Channel and Singapore Strait have excellent terrestrial receiver coverage. The Persian Gulf has patchy coverage — expect fewer hits.
-- **Flags of convenience** are common — Marshall Islands, Liberia, Panama, and Malta flags on vessels with European or Asian operators are normal.
-
----
-
-## Planned Features
-
-- Flask/HTTP JSON server for feeding vessel data to an Adafruit Matrix Portal S3 + 64×64 RGB LED matrix display
-- Pre-computed coastline bitmap for real-time map rendering on the LED matrix
-- Scrolling ship name/destination ticker on the LED display
-- CSV/SQLite logging for track history
-
----
-
 ## Project Background
 
-Developed iteratively on a Raspberry Pi 5 in Denver, CO. The English Channel / Dover Strait bounding box `[50.5,1.0]→[51.5,2.5]` covers one of the busiest shipping lanes in the world and provides a rich real-time data stream for development and testing.
+Built iteratively on a Raspberry Pi 5 in Denver, CO, monitoring real-time ship traffic in the Dover Strait — one of the busiest shipping lanes in the world. The English Channel bounding box `[50.5–51.5°N, 1.0–2.5°E]` captures the full Traffic Separation Scheme, both traffic lanes, all major ferry routes, offshore wind farm service vessels, and the ports of Dover, Folkestone, Ramsgate, Calais, Dunkirk, and Boulogne.
 
 ---
 
