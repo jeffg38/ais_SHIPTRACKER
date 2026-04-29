@@ -15,6 +15,7 @@ import json
 import time
 import sys
 import argparse
+import threading
 import os
 from dotenv import load_dotenv
 
@@ -235,6 +236,98 @@ def decode_mmsi(mmsi):
 # VESSEL CACHE
 # ─────────────────────────────────────────────
 vessel_cache = {}  # mmsi → dict
+# ─────────────────────────────────────────────────────────────
+# ADD THIS TO ais_SHIPTRACKER.py
+#
+# Step 1: Add 'import threading' to the imports at the top
+#         (it's a Python built-in, no pip install needed)
+#
+# Step 2: Add 'import json' if not already there
+#         (also built-in)
+#
+# Step 3: Paste the JSON_OUTPUT_PATH constant and the
+#         write_vessels_json() function + thread start
+#         anywhere after the vessel_cache definition
+#         and before the websocket section.
+# ─────────────────────────────────────────────────────────────
+
+import threading
+
+# Path where vessels.json will be written
+# Flask server reads from this file
+JSON_OUTPUT_PATH = "/home/jeffg38/ais_project/vessels.json"
+
+# How often to write the file (seconds)
+JSON_WRITE_INTERVAL = 5
+
+
+def write_vessels_json():
+    """
+    Background thread — writes a trimmed snapshot of vessel_cache
+    to vessels.json every JSON_WRITE_INTERVAL seconds.
+
+    Only fields the Matrix Portal S3 actually needs are included
+    to keep the JSON small and fast to parse on the S3.
+    """
+    while True:
+        try:
+            # Build a trimmed list — only fields S3 needs
+            vessels = []
+            now = time.time()
+            for mmsi, v in vessel_cache.items():
+                # Skip vessels with no position
+                if v["lat"] is None or v["lon"] is None:
+                    continue
+                # Skip vessels not updated in last 5 minutes
+                if now - v["last_seen"] > 300:
+                    continue
+                vessels.append({
+                    "mmsi":    v["mmsi"],
+                    "name":    v["name"],
+                    "type":    v["vtype"],
+                    "flag":    v["country"],
+                    "dest":    v["dest"],
+                    "lat":     round(v["lat"], 4),
+                    "lon":     round(v["lon"], 4),
+                    "sog":     v["sog"],
+                    "hdg":     v["hdg"],
+                    "nav":     v["nav"],
+                    "age":     int(now - v["last_seen"]),
+                })
+
+            # Sort by most recently updated first
+            vessels.sort(key=lambda x: x["age"])
+
+            payload = {
+                "ts":       int(now),           # Unix timestamp
+                "count":    len(vessels),        # number of active vessels
+                "region":   region_label if region_label else "Unknown",        # e.g. "English Channel"
+                "lat_min":  LAT_MIN,
+                "lat_max":  LAT_MAX,
+                "lon_min":  LON_MIN,
+                "lon_max":  LON_MAX,
+                "vessels":  vessels,
+            }
+
+            # Write atomically — write to temp file then rename
+            # so the Flask server never reads a half-written file
+            tmp_path = JSON_OUTPUT_PATH + ".tmp"
+            with open(tmp_path, "w") as f:
+                json.dump(payload, f)
+            os.replace(tmp_path, JSON_OUTPUT_PATH)
+
+        except Exception as e:
+            print(f"\n⚠️  JSON writer error: {e}")
+
+        time.sleep(JSON_WRITE_INTERVAL)
+
+
+# ── Start the JSON writer thread ──────────────────────────────
+# daemon=True means it will die automatically when the main
+# script exits — no cleanup needed
+json_thread = threading.Thread(target=write_vessels_json, daemon=True)
+json_thread.start()
+print(f"📝  JSON writer started → {JSON_OUTPUT_PATH} (every {JSON_WRITE_INTERVAL}s)")
 update_order = []  # MMSIs ordered by last update, most recent last
 
 def upsert(mmsi, updates):
